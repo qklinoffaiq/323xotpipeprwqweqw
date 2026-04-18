@@ -1053,10 +1053,7 @@ while True:
                         # Завершаем сессию
                         if chat_id in pending_dobid_requests:
                             del pending_dobid_requests[chat_id]
-                elif text == '.админчат':
-                    if chat_id != admin_chat:
-                        send_message(chat_id, "❌ Эта команда доступна только в админ-чате.")
-                        continue
+                elif text == '.админчат'
                     if not has_permission(user_id, 'dev'):
                         send_message(chat_id, "❌ У вас нет прав на выполнение этой команды.")
                         continue
