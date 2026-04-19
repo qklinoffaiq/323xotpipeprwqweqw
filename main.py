@@ -7,6 +7,7 @@ import os
 import requests
 import config
 from config import MESSAGE_CONFIG, main_photo, group_token, group_id
+from datetime import datetime
 admin_ids = []
 
 # Глобальные настройки
@@ -72,31 +73,13 @@ def update_user_stats(user_id, action=None):
             "total_messages": 0,
             "last_message": ""
         }
-
-def upload_photos_from_message(message):
-    """Загружает все фото из сообщения и возвращает список attachment ID"""
-    photos = []
-    if 'attachments' in message and message['attachments']:
-        for att in message['attachments']:
-            if att['type'] == 'photo':
-                # Берем фото максимального размера
-                max_size = max(att['photo']['sizes'], key=lambda x: x['width'] * x['height'])
-                photo_url = max_size['url']
-                
-                # Скачиваем фото в память
-                photo_response = requests.get(photo_url)
-                if photo_response.status_code == 200:
-                    # Загружаем фото напрямую из памяти
-                    uploaded = upload_photo_to_vk_from_memory(photo_response.content)
-                    if uploaded:
-                        photos.append(uploaded)
-    return photos
     if action == "osn_photo":
         users[user_id_str]["osn_photo_count"] += 1
     elif action == "osn_text":
         users[user_id_str]["osn_text_count"] += 1
-    users[user_id_str]["total_messages"] += 1
-    users[user_id_str]["last_message"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    elif action == "command":
+        users[user_id_str]["total_messages"] += 1
+    users[user_id_str]["last_message"] = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {action if action else 'message'}"
     save_users(users)
 
 def get_help_text(role):
@@ -144,8 +127,6 @@ def get_help_text(role):
     return full_text.strip()
 
 # Импорт datetime после его использования
-from datetime import datetime
-
 additional_texts = []  # Дополнительные тексты
 additional_texts_separator = "\n\n"  # Разделитель для дополнительных текстов
 additional_photos_by_text = {}  # Словарь для хранения вложений по текстам
@@ -459,8 +440,12 @@ while True:
                 # Все команды работают только для администраторов
                 # Проверяем, является ли отправитель администратором по его user_id
                 user_id = message['from_id']
-                # Обновляем статистику для всех пользователей
-                update_user_stats(user_id)
+                # Обновляем last_message для всех входящих сообщений
+                update_user_stats(user_id, 'message')
+
+                # Проверяем, является ли сообщение командой
+                if not text.startswith('.'):
+                    continue
 
                 # Функция для получения user_id из ссылки, @ или ответа
                 def extract_target_user(event):
@@ -598,32 +583,37 @@ while True:
 
                 # --- Команда .админ ---
                 elif text.startswith('.') and text.split()[0] == '.админ':
-                    # Проверка прав отправителя
                     if not has_permission(user_id, 'dev'):
                         send_message(chat_id, "❌ Доступ запрещён. Только разработчик может выдавать права администратора.")
                         logging.info(f"Попытка использования команды .админ пользователем {user_id} без прав dev.")
                         continue
                     
-                    # Извлечение ID пользователя с помощью универсальной функции
                     target_id = extract_target_user(event)
                     if not target_id:
                         send_message(chat_id, "❌ Укажите пользователя: ответом, @ или ссылкой.")
                         logging.info(f"Команда .админ: не указан ID пользователя от {user_id}.")
                         continue
                     
-                    # Запрет снятия прав с себя
                     if user_id == target_id:
                         send_message(chat_id, "❌ Нельзя снимать права администратора с себя через эту команду.")
                         continue
                     
-                    # Загружаем текущие данные
                     users = load_users()
                     user_key = str(target_id)
                     
-                    # Проверяем текущую роль
-                    is_admin = users.get(user_key, {}).get('role') == 'admin'
+                    # Автоматическое добавление пользователя в БД с ролью user
+                    if user_key not in users:
+                        users[user_key] = {
+                            "role": "user",
+                            "osn_photo_count": 0,
+                            "osn_text_count": 0,
+                            "total_messages": 0,
+                            "last_message": ""
+                        }
+                        logging.info(f"Пользователь {target_id} автоматически добавлен в users_db.json при выдаче прав администратора")
                     
-                    # Переключаем роль
+                    is_admin = users[user_key].get('role') == 'admin'
+                    
                     if is_admin:
                         # Снимаем права
                         if target_id in admin_ids:
@@ -637,36 +627,26 @@ while True:
                         users[user_key]['role'] = 'admin'
                         action = 'add'
                     
-                    # Сохраняем обновлённые данные
                     save_users(users)
-                    data['admin_ids'] = admin_ids
-                    try:
-                        with open('data.json', 'w', encoding='utf-8') as f:
-                            json.dump(data, f, ensure_ascii=False, indent=4)
-                    except Exception as e:
-                        logging.error(f"Ошибка сохранения data.json: {e}")
-                        send_message(chat_id, "⚠️ Ошибка сохранения конфигурации.")
-                        continue
                     
-                    # Получаем имена пользователей
                     try:
                         target_info = vk.users.get(user_ids=target_id)[0]
-                        target_name = f"[https://vk.com/id{target_id}|{target_info['first_name']} {target_info['last_name']}]"
-                    except Exception:
-                        target_name = f"[id{target_id}|пользователь {target_id}"
-                    
-                    try:
+                        target_full_name = f"{target_info['first_name']} {target_info['last_name']}"
+                        target_link = f"[id{target_id}|{target_full_name}]"
+                        
                         admin_info = vk.users.get(user_ids=user_id)[0]
-                        admin_name = f"[https://vk.com/id{user_id}|{admin_info['first_name']} {admin_info['last_name']}]"
+                        admin_full_name = f"{admin_info['first_name']} {admin_info['last_name']}"
+                        admin_name = f"[id{user_id}|{admin_full_name}]"
                     except Exception:
-                        admin_name = f"[id{user_id}|администратор]"
+                        target_link = f"[id{target_id}|пользователь {target_id}]"
+                        admin_name = f"[id{user_id}|пользователь {user_id}]"
                     
-                    # Отправляем кликабельное сообщение
+                    # Отправляем кликабельное уведомление о назначении
                     if action == 'add':
-                        send_message(chat_id, f"✅ {admin_name} выдал права администратора пользователю {target_name}.")
+                        send_message(chat_id, f"✅ {admin_name} выдал права администратора пользователю {target_link}.")
                         logging.info(f"Пользователь {user_id} назначил администратором {target_id}.")
                     else:
-                        send_message(chat_id, f"❌ {admin_name} снял права администратора с пользователя {target_name}.")
+                        send_message(chat_id, f"❌ {admin_name} снял права администратора у {target_link}.")
                         logging.info(f"Пользователь {user_id} снял права администратора с {target_id}.")
 
                 # --- Команда .стата ---
@@ -696,6 +676,7 @@ while True:
                         f"🔹 Последнее сообщение: {user_data['last_message']}"
                     )
                     send_message(chat_id, stats_text)
+                    update_user_stats(user_id, 'command')
 
                 # --- Команда .стафф ---
                 elif text.startswith('.') and text.split()[0] == '.стафф':
@@ -769,6 +750,7 @@ while True:
                         additional_texts[idx] = new_text
                         save_data()
                         send_message(chat_id, f"{new_text}")
+                        update_user_stats(user_id, 'command')
                     except Exception as e:
                         send_message(chat_id, "Ошибка при обработке команды.")
                 elif text == '.список':
@@ -781,6 +763,7 @@ while True:
                     total_chats = len(chat_ids)
                     chat_list = "\n".join(str(cid) for cid in chat_ids if cid != admin_chat)
                     send_message(chat_id, f"Количество чатов для рассылки: {total_chats}\nСписок чатов:\n{chat_list}")
+                    update_user_stats(user_id, 'command')
                 elif text == '.рассылка':
                     if chat_id != admin_chat:
                         send_message(chat_id, "❌ Эта команда доступна только в админ-чате.")
@@ -793,6 +776,7 @@ while True:
                             reset_event.clear()
                         reset_event.set()
                         send_message(admin_chat, "Рассылка запущена и таймер сброшен.")
+                    update_user_stats(user_id, 'command')
                 elif text == '.тест':
                     if chat_id != admin_chat:
                         send_message(chat_id, "❌ Эта команда доступна только в админ-чате.")
@@ -806,6 +790,7 @@ while True:
                                 send_message(chat_id, add_text.strip(), attachment=','.join(attachments) if attachments else None)
                                 time.sleep(interval_sec)
                     send_message(chat_id, message_text, attachment=uploaded_photo)
+                    update_user_stats(user_id, 'command')
                 elif text.startswith('.редоснтекст'):
                     if chat_id != admin_chat:
                         send_message(chat_id, "❌ Эта команда доступна только в админ-чате.")
@@ -863,6 +848,7 @@ while True:
                         send_message(chat_id, "❌ У вас нет прав на выполнение этой команды.")
                         continue
                     send_message(chat_id, f"✅ ID этой беседы: {chat_id}")
+                    update_user_stats(user_id, 'command')
                 elif text == '.инфо':
                     if chat_id != admin_chat:
                         send_message(chat_id, "❌ Эта команда доступна только в админ-чате.")
@@ -872,6 +858,7 @@ while True:
                         continue
                     additional_text_display = "" if not additional_texts else additional_texts_separator.join(additional_texts).strip()
                     send_message(chat_id, f"🔸 Настройки:\n\nКД между сообщениями: {cd_min} минут.\nИнтервал рассылки: {interval_sec} секунд.\nТекст рассылки:\n\n{message_text}\nДополнительное сообщение:\n\n{additional_text_display}")
+                    update_user_stats(user_id, 'command')
                 elif text == '.допсписок':
                     if chat_id != admin_chat:
                         send_message(chat_id, "❌ Эта команда доступна только в админ-чате.")
@@ -885,6 +872,7 @@ while True:
                     else:
                         text_list = "\n".join(f"#{i+1}: {text}" for i, text in enumerate(current_texts))
                         send_message(chat_id, f"Список дополнительных текстов:\n{text_list}")
+                    update_user_stats(user_id, 'command')
 
                 elif text == '.пинг':
                     if chat_id != admin_chat:
@@ -895,8 +883,7 @@ while True:
                     end_time = time.time()
                     ping_time = int((end_time - start_time) * 1000)
                     send_message(chat_id, f'Пинг: {ping_time}ms')
-                
-                # === НАЙДИТЕ МЕСТО С КОММАНДОЙ .хелп И ЗАМЕНИТЕ ЕЁ ===
+                    update_user_stats(user_id, 'command')
 
                 elif text == '.хелп':
                     if chat_id != admin_chat:
@@ -905,6 +892,7 @@ while True:
                     role = get_role(user_id)
                     help_text = get_help_text(role)
                     send_message(chat_id, help_text)
+                    update_user_stats(user_id, 'command')
 
                 # === ДОБАВЬТЕ НОВУЮ КОМАНДУ .настройки ===
 
@@ -971,6 +959,7 @@ while True:
                             send_message(chat_id, f"{new_text}")
                     except IndexError:
                         send_message(chat_id, "Неверный формат команды. Используйте: .добтекст [текст]")
+                    update_user_stats(user_id, 'command')
                 elif text.startswith('.удтекст'):
                     if chat_id != admin_chat:
                         send_message(chat_id, "❌ Эта команда доступна только в админ-чате.")
@@ -1007,6 +996,7 @@ while True:
                         send_message(chat_id, "Номер должен быть числом. Пример: .удтекст 1")
                     except IndexError:
                         send_message(chat_id, "Укажите номер текста для удаления. Пример: .удтекст 1")
+                    update_user_stats(user_id, 'command')
                 
                 elif text == '.делид':
                     if chat_id != admin_chat:
