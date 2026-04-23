@@ -381,7 +381,7 @@ def broadcast_message():
         # Отправляем начальное сообщение о прогрессе в админ-чат
         progress_message_id = None
         if admin_chat:
-            progress_message = f"🚀 Рассылка в процессе...\n\nВсего чатов: {total_chats}\nПрогресс: 0/{total_chats} (0%)\n[░░░░░░░░░░░░░░░░░░░░]"
+            progress_message = f"ТЕКУЩАЯ РАССЫЛКА\n— Всего чатов: {total_chats}\n— Отправлено: 0 / {total_chats} (0%)\n— Статус: ⏳ Активна"
             result = send_message(admin_chat, progress_message)
             if result and isinstance(result, list) and len(result) > 0:
                 progress_message_id = result[0]
@@ -441,7 +441,7 @@ def broadcast_message():
                 progress = (sent_count / total_chats) * 100
                 filled_bars = int(progress // 5)
                 progress_bar = "█" * filled_bars + "░" * (20 - filled_bars)
-                progress_message = f"🚀 Рассылка в процессе...\n\nВсего чатов: {total_chats}\nПрогресс: {sent_count}/{total_chats} ({progress:.1f}%)\n[{progress_bar}]"
+                progress_message = f"ТЕКУЩАЯ РАССЫЛКА\n— Всего чатов: {total_chats}\n— Отправлено: {sent_count} / {total_chats} ({progress:.1f}%)\n— Статус: ⏳ Активна"
                 try:
                     vk.messages.edit(
                         peer_id=admin_chat,
@@ -843,7 +843,6 @@ while True:
                         if reset_event.is_set():
                             reset_event.clear()
                         reset_event.set()
-                        send_message(admin_chat, "Рассылка запущена и таймер сброшен.")
                     update_user_stats(user_id, 'command')
                 elif text == '.тест':
                     if chat_id != admin_chat:
